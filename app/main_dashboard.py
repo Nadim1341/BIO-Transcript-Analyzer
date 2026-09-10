@@ -467,14 +467,14 @@ def main():
         ]
 
         if filter_sig:
-            sig_mask = df_proc["target_label"].isin(["Up-Regulated", "Down-Regulated"])
+            sig_mask = df_proc["target_class"] != 1
             display_df = df_proc.loc[sig_mask, table_cols]
         else:
             display_df = df_proc[table_cols]
 
         if search_kw and search_kw.strip():
             kw = search_kw.strip()
-            search_mask = display_df["transcript_id"].str.contains(kw, case=False, na=False)
+            search_mask = display_df["transcript_id"].str.contains(kw, case=False, na=False, regex=False)
             display_df = display_df[search_mask]
 
         total_matching = len(display_df)

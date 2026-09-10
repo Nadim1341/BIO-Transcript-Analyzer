@@ -74,7 +74,8 @@ class Visualizer:
             # Keep 100% of Up and Down regulated genes; sample neutral background cloud
             if cat_name == "Neutral":
                 if total_cat_count > max_neutral_display:
-                    sampled_indices = np.random.RandomState(42).choice(match_indices, size=max_neutral_display, replace=False)
+                    step = max(1, total_cat_count // max_neutral_display)
+                    sampled_indices = match_indices[::step][:max_neutral_display]
                     subset = plot_df.iloc[sampled_indices]
                     trace_name = f"Neutral ({total_cat_count:,} total)"
                 else:
@@ -403,10 +404,20 @@ class Visualizer:
         """
         if isinstance(df_or_counts, dict):
             counts = pd.Series(df_or_counts)
+        elif isinstance(df_or_counts, pd.Series):
+            counts = df_or_counts
+        elif isinstance(df_or_counts, pd.DataFrame):
+            if "target_label" in df_or_counts.columns:
+                counts = df_or_counts["target_label"].value_counts()
+            elif "target_class" in df_or_counts.columns:
+                class_map = {2: "Up-Regulated", 0: "Down-Regulated", 1: "Neutral"}
+                counts = df_or_counts["target_class"].map(class_map).value_counts()
+            else:
+                counts = pd.Series({"Up-Regulated": 0, "Down-Regulated": 0, "Neutral": len(df_or_counts)})
         elif hasattr(df_or_counts, "value_counts"):
             counts = df_or_counts.value_counts()
         else:
-            counts = df_or_counts["target_label"].value_counts()
+            counts = pd.Series({"Up-Regulated": 0, "Down-Regulated": 0, "Neutral": 0})
 
         colors = {
             "Up-Regulated": COLOR_UP,
