@@ -61,8 +61,8 @@ class Visualizer:
             ("Up-Regulated", COLOR_UP, 7, 0.9),
         ]
 
-        # For large datasets, cap neutral background cloud at 3,000 points (preserves 100% of shape while dropping JSON size 95%)
-        max_neutral_display = 3000
+        # For large datasets, cap neutral background cloud at 1,500 points
+        max_neutral_display = 1500
         labels_arr = plot_df["target_label"].values
 
         for cat_name, color, size, opacity in categories:
@@ -71,44 +71,105 @@ class Visualizer:
             if total_cat_count == 0:
                 continue
 
-            # Keep 100% of Up and Down regulated genes; only sample the neutral cloud if needed
-            if cat_name == "Neutral" and total_cat_count > max_neutral_display:
-                sampled_indices = np.random.RandomState(42).choice(match_indices, size=max_neutral_display, replace=False)
-                subset = plot_df.iloc[sampled_indices]
-                trace_name = f"Neutral ({total_cat_count:,} total, {max_neutral_display:,} cloud)"
+            # Keep 100% of Up and Down regulated genes; sample neutral background cloud
+            if cat_name == "Neutral":
+                if total_cat_count > max_neutral_display:
+                    sampled_indices = np.random.RandomState(42).choice(match_indices, size=max_neutral_display, replace=False)
+                    subset = plot_df.iloc[sampled_indices]
+                    trace_name = f"Neutral ({total_cat_count:,} total)"
+                else:
+                    subset = plot_df.iloc[match_indices]
+                    trace_name = f"Neutral ({total_cat_count:,})"
+
+                # Neutral cloud is lightweight with hoverinfo='skip' for 60fps smooth mouse movement
+                fig.add_trace(
+                    go.Scattergl(
+                        x=subset["logFC"],
+                        y=subset[y_col],
+                        mode="markers",
+                        name=trace_name,
+                        marker=dict(
+                            color=color,
+                            size=3.5,
+                            opacity=0.35,
+                        ),
+                        hoverinfo="skip"
+                    )
+                )
             else:
                 subset = plot_df.iloc[match_indices]
                 trace_name = f"{cat_name} ({total_cat_count:,})"
 
-            # Vectorized hover metadata
-            custom_cols = ["transcript_id", "database_source", "t", "P.Value", "adj.P.Val"]
-            custom_matrix = subset[custom_cols].fillna(0.0).values
+                max_sig_hover = 3000
+                if total_cat_count > max_sig_hover:
+                    # Prioritize top 3,000 by statistical significance for rich hover metadata
+                    top_local_idx = np.argpartition(-subset[y_col].values, max_sig_hover)[:max_sig_hover]
+                    top_subset = subset.iloc[top_local_idx]
+                    rest_local_idx = np.argpartition(-subset[y_col].values, max_sig_hover)[max_sig_hover:]
+                    rest_subset = subset.iloc[rest_local_idx]
 
-            hovertemplate = (
-                "<b>ID:</b> %{customdata[0]}<br>"
-                "<b>Database:</b> %{customdata[1]}<br>"
-                f"<b>Regulation:</b> {cat_name}<br>"
-                "<b>logFC:</b> %{x:.3f}<br>"
-                "<b>t-statistic:</b> %{customdata[2]:.3f}<br>"
-                "<b>P.Value:</b> %{customdata[3]:.2e}<br>"
-                "<b>adj.P.Val:</b> %{customdata[4]:.2e}<extra></extra>"
-            )
+                    custom_cols = ["transcript_id", "database_source", "t", "P.Value", "adj.P.Val"]
+                    custom_matrix = top_subset[custom_cols].fillna(0.0).values
+                    hovertemplate = (
+                        "<b>ID:</b> %{customdata[0]}<br>"
+                        "<b>Database:</b> %{customdata[1]}<br>"
+                        f"<b>Regulation:</b> {cat_name}<br>"
+                        "<b>logFC:</b> %{x:.3f}<br>"
+                        "<b>t-statistic:</b> %{customdata[2]:.3f}<br>"
+                        "<b>P.Value:</b> %{customdata[3]:.2e}<br>"
+                        "<b>adj.P.Val:</b> %{customdata[4]:.2e}<extra></extra>"
+                    )
+                    fig.add_trace(
+                        go.Scattergl(
+                            x=top_subset["logFC"],
+                            y=top_subset[y_col],
+                            mode="markers",
+                            name=trace_name,
+                            marker=dict(color=color, size=size, opacity=opacity),
+                            customdata=custom_matrix,
+                            hovertemplate=hovertemplate
+                        )
+                    )
+                    fig.add_trace(
+                        go.Scattergl(
+                            x=rest_subset["logFC"],
+                            y=rest_subset[y_col],
+                            mode="markers",
+                            name=f"{cat_name} (Additional)",
+                            marker=dict(color=color, size=size * 0.85, opacity=opacity * 0.65),
+                            showlegend=False,
+                            hoverinfo="skip"
+                        )
+                    )
+                else:
+                    custom_cols = ["transcript_id", "database_source", "t", "P.Value", "adj.P.Val"]
+                    custom_matrix = subset[custom_cols].fillna(0.0).values
 
-            fig.add_trace(
-                go.Scattergl(
-                    x=subset["logFC"],
-                    y=subset[y_col],
-                    mode="markers",
-                    name=trace_name,
-                    marker=dict(
-                        color=color,
-                        size=size,
-                        opacity=opacity,
-                    ),
-                    customdata=custom_matrix,
-                    hovertemplate=hovertemplate
-                )
-            )
+                    hovertemplate = (
+                        "<b>ID:</b> %{customdata[0]}<br>"
+                        "<b>Database:</b> %{customdata[1]}<br>"
+                        f"<b>Regulation:</b> {cat_name}<br>"
+                        "<b>logFC:</b> %{x:.3f}<br>"
+                        "<b>t-statistic:</b> %{customdata[2]:.3f}<br>"
+                        "<b>P.Value:</b> %{customdata[3]:.2e}<br>"
+                        "<b>adj.P.Val:</b> %{customdata[4]:.2e}<extra></extra>"
+                    )
+
+                    fig.add_trace(
+                        go.Scattergl(
+                            x=subset["logFC"],
+                            y=subset[y_col],
+                            mode="markers",
+                            name=trace_name,
+                            marker=dict(
+                                color=color,
+                                size=size,
+                                opacity=opacity,
+                            ),
+                            customdata=custom_matrix,
+                            hovertemplate=hovertemplate
+                        )
+                    )
 
         # Threshold lines
         p_threshold_y = -np.log10(adjp_thresh)

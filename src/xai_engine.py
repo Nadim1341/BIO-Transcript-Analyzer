@@ -133,22 +133,24 @@ class XAIEngine:
         Biomarker_Score = (|logFC| * -log10(adj.P.Val)) * Signal_Factor
         Transcripts must also have biological regulation (Up or Down regulated prioritized).
         """
-        df = full_df.copy()
-
-        # Compute robust Biomarker Impact Score
         eps = 1e-300
-        neg_log_adjp = -np.log10(df["adj.P.Val"].clip(lower=eps))
-        abs_logfc = np.abs(df["logFC"])
-        
-        # Regulation weighting: prioritize statistically significant differential expression
-        is_significant = (df["adj.P.Val"] < 0.05).astype(float)
-        is_regulated = (df["target_label"].isin(["Up-Regulated", "Down-Regulated"])).astype(float)
+        if "neg_log10_adjpval" in full_df.columns:
+            neg_log_adjp = full_df["neg_log10_adjpval"].values
+        else:
+            neg_log_adjp = -np.log10(full_df["adj.P.Val"].clip(lower=eps).values)
+
+        if "abs_logFC" in full_df.columns:
+            abs_logfc = full_df["abs_logFC"].values
+        else:
+            abs_logfc = np.abs(full_df["logFC"].values)
+
+        is_significant = (full_df["adj.P.Val"].values < 0.05).astype(np.float32)
+        is_regulated = (full_df["target_label"].values != "Neutral").astype(np.float32)
 
         # Composite score
-        df["Biomarker_Score"] = (abs_logfc * neg_log_adjp) * (1.0 + is_significant * 0.5 + is_regulated * 1.0)
-        df["Biomarker_Score"] = df["Biomarker_Score"].round(4)
+        scores = (abs_logfc * neg_log_adjp) * (1.0 + is_significant * 0.5 + is_regulated * 1.0)
+        scores = np.round(scores, 4)
 
-        # Presentation columns
         display_cols = [
             "transcript_id",
             "database_source",
@@ -159,20 +161,29 @@ class XAIEngine:
             "adj.P.Val",
             "Biomarker_Score"
         ]
-        available_cols = [c for c in display_cols if c in df.columns]
+        available_cols = [c for c in display_cols if c in full_df.columns or c == "Biomarker_Score"]
 
-        # Overall top biomarkers
-        overall_top = df.sort_values("Biomarker_Score", ascending=False).drop_duplicates("transcript_id").head(top_n)[available_cols].reset_index(drop=True)
+        # To avoid sorting 100k+ rows multiple times, partition top scoring candidate pool
+        pool_size = min(len(full_df), max(top_n * 50, 500))
+        if len(full_df) > pool_size:
+            top_indices = np.argpartition(-scores, pool_size)[:pool_size]
+            candidate_df = full_df.iloc[top_indices].copy()
+            candidate_df["Biomarker_Score"] = scores[top_indices]
+        else:
+            candidate_df = full_df.copy()
+            candidate_df["Biomarker_Score"] = scores
 
-        # Specific targeted databases as required by specification:
-        # RefSeq, ENSEMBL, and lncRNAWiki
+        candidate_df = candidate_df.sort_values("Biomarker_Score", ascending=False)
+        overall_top = candidate_df.drop_duplicates("transcript_id").head(top_n)[available_cols].reset_index(drop=True)
+
         target_dbs = ["RefSeq", "ENSEMBL", "lncRNAWiki", "Ace View", "miTranscriptome", "UCSC Genes"]
         db_rankings: Dict[str, pd.DataFrame] = {}
 
+        candidate_db_lower = candidate_df["database_source"].str.lower()
         for db in target_dbs:
-            db_subset = df[df["database_source"].str.lower() == db.lower()].copy()
+            db_subset = candidate_df[candidate_db_lower == db.lower()]
             if not db_subset.empty:
-                ranked = db_subset.sort_values("Biomarker_Score", ascending=False).drop_duplicates("transcript_id").head(top_n)[available_cols].reset_index(drop=True)
+                ranked = db_subset.drop_duplicates("transcript_id").head(top_n)[available_cols].reset_index(drop=True)
                 db_rankings[db] = ranked
             else:
                 db_rankings[db] = pd.DataFrame(columns=available_cols)
