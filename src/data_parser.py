@@ -125,69 +125,61 @@ class DataParser:
     @classmethod
     def clean_dataset(cls, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Clean and validate extracted differential expression data.
-        - Maps columns to canonical names
-        - Infers or fills database source
-        - Coerces numerical values and drops nulls
-        - Validates probabilities and statistics
+        Clean, validate, and standardize differential expression data.
+        Ensures numerical integrity, removes NaNs in critical columns, and enforces bounds.
         """
         if df.empty:
             raise ValueError("Input dataframe is empty.")
 
         df = cls.standardize_column_names(df)
 
-        # Check required columns
+        # Ensure mandatory columns exist (or attempt fallback)
         missing_cols = [c for c in ["transcript_id", "logFC", "P.Value"] if c not in df.columns]
         if missing_cols:
             raise ValueError(f"Missing mandatory differential expression columns: {missing_cols}")
 
-        # Derive t-statistic if missing
-        if "t" not in df.columns:
-            logger.info("Column 't' not found; approximating from logFC.")
-            df["t"] = df["logFC"] * 2.5  # reasonable empirical heuristic when absent
+        # Coerce numeric types
+        for col in ["logFC", "t", "P.Value", "adj.P.Val"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Derive adj.P.Val if missing using Benjamini-Hochberg FDR
-        if "adj.P.Val" not in df.columns:
-            logger.info("Column 'adj.P.Val' not found; calculating Benjamini-Hochberg FDR.")
-            pvals = pd.to_numeric(df["P.Value"], errors="coerce").fillna(1.0)
+        # Handle NaNs in numeric columns
+        if "logFC" in df.columns:
+            df = df.dropna(subset=["logFC", "P.Value"])
+
+        # Derive t-statistic if missing
+        if "t" not in df.columns or df["t"].isna().any():
+            df["t"] = df["t"].fillna(df["logFC"] * 2.5)
+
+        # Derive adj.P.Val if missing
+        if "adj.P.Val" not in df.columns or df["adj.P.Val"].isna().any():
+            pvals = df["P.Value"].fillna(1.0)
             n = len(pvals)
             order = np.argsort(pvals)
             ranks = np.empty_like(order)
             ranks[order] = np.arange(1, n + 1)
             qvals = (pvals * n / ranks).clip(upper=1.0)
-            df["adj.P.Val"] = qvals
+            df["adj.P.Val"] = df["adj.P.Val"].fillna(qvals)
 
-        # Assign/infer database source using vectorized operations
+        # Ensure database source
         if "database_source" not in df.columns:
             df["database_source"] = cls.vectorized_infer_database(df["transcript_id"])
         else:
-            df["database_source"] = df["database_source"].fillna("").astype(str).str.strip()
-            mask_empty = df["database_source"].isin(["", "nan", "None", "Unknown"])
-            if mask_empty.any():
-                df.loc[mask_empty, "database_source"] = cls.vectorized_infer_database(df.loc[mask_empty, "transcript_id"])
+            mask = df["database_source"].isna() | (df["database_source"] == "")
+            df.loc[mask, "database_source"] = cls.vectorized_infer_database(df.loc[mask, "transcript_id"])
 
-        # Drop rows with critical null values or empty IDs
-        initial_len = len(df)
-        df = df.dropna(subset=["transcript_id", "logFC", "P.Value", "adj.P.Val"]).copy()
-        tid_cleaned = df["transcript_id"].astype(str).str.strip()
-        valid_mask = (
-            (tid_cleaned != "") &
-            ~tid_cleaned.str.lower().isin(["nan", "null", "none"])
-        )
-        df = df[valid_mask].copy()
-        df["transcript_id"] = tid_cleaned[valid_mask]
-        df["database_source"] = df["database_source"].astype(str).str.strip()
-
-        # Ensure probabilities are bounded in (0, 1]
-        eps = 1e-300
-        df["P.Value"] = df["P.Value"].clip(lower=eps, upper=1.0)
-        df["adj.P.Val"] = df["adj.P.Val"].clip(lower=eps, upper=1.0)
-
-        # Remove duplicate transcript entries, keeping the one with lowest adj.P.Val
-        df = df.sort_values("adj.P.Val", ascending=True).drop_duplicates(subset=["transcript_id"]).reset_index(drop=True)
-
-        logger.info(f"Cleaned dataset: {len(df)} records retained from {initial_len} initial records.")
-        return df
+        # Final cleanup: bounds, finite values, and deduplication
+        init_len = len(df)
+        df["P.Value"] = df["P.Value"].clip(1e-300, 1.0)
+        df["adj.P.Val"] = df["adj.P.Val"].clip(1e-300, 1.0)
+        
+        # Drop non-finite values (inf, -inf)
+        df = df[np.isfinite(df["logFC"]) & np.isfinite(df["t"])]
+        df = df.dropna(subset=["transcript_id", "logFC", "P.Value", "adj.P.Val"])
+        df = df.sort_values("adj.P.Val").drop_duplicates(subset=["transcript_id"])
+        
+        logger.info(f"Dataset cleaned: {init_len} rows reduced to {len(df)} valid records.")
+        return df.reset_index(drop=True)
 
     @classmethod
     def parse_csv(cls, file_source: Union[str, BinaryIO, io.StringIO]) -> pd.DataFrame:

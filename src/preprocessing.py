@@ -169,15 +169,28 @@ class TranscriptPreprocessor:
         else:
             scaled_num = self.scaler.transform(df_proc[self.numerical_cols])
 
+        # Assertions after scaling
+        if scaled_num.shape[0] != len(df_proc):
+            raise ValueError("Scaling resulted in row count mismatch.")
+        if np.isnan(scaled_num).any():
+            raise ValueError("Scaling produced NaN values.")
+
         # Combine scaled numerical features with binary one-hot database features
         scaled_num_df = pd.DataFrame(scaled_num, columns=self.numerical_cols, index=df_proc.index)
         db_df = df_proc[self.db_cols].copy()
 
         X = pd.concat([scaled_num_df, db_df], axis=1)
         y = df_proc["target_class"]
-
+        # Guard against NaNs in the final feature matrix
+        if X.isnull().any().any():
+            raise ValueError("NaN values detected in feature matrix after scaling.")
+        # Ensure target_label contains exactly the three expected classes
+        expected_labels = {CLASS_UP, CLASS_DOWN, CLASS_NEUTRAL}
+        actual_labels = set(df_proc["target_label"].unique())
+        missing = expected_labels - actual_labels
+        if missing:
+            raise ValueError(f"Missing expected target labels after labeling: {missing}")
         return X, y, df_proc
-
     def get_class_names(self) -> List[str]:
         """Return human-readable class names in numerical order [0, 1, 2]."""
         return list(self.label_encoder.classes_)

@@ -364,6 +364,41 @@ def main():
     else:
         filtered_df = raw_df[raw_df["database_source"].isin(selected_dbs)]
 
+    # ------------------ SYSTEM HEALTH-CHECK ------------------
+    st.sidebar.markdown("---")
+    st.sidebar.header("🩺 Diagnostic & Verification")
+    if st.sidebar.button("Run System Health-Check", help="Perform end-to-end verification of preprocessing and ML models with synthetic data."):
+        import time
+        t0 = time.time()
+        with st.sidebar.status("Running pipeline audit...", expanded=True) as status:
+            try:
+                st.write("1. Generating synthetic control batch...")
+                syn_df = pd.DataFrame({
+                    "transcript_id": [f"SYN_{i:04d}" for i in range(120)],
+                    "logFC": [2.5 if i < 30 else (-2.5 if i < 60 else 0.1) for i in range(120)],
+                    "t": [5.0 if i < 30 else (-5.0 if i < 60 else 0.2) for i in range(120)],
+                    "P.Value": [1e-5 if i < 60 else 0.5 for i in range(120)],
+                    "adj.P.Val": [1e-4 if i < 60 else 0.6 for i in range(120)],
+                    "database_source": ["RefSeq", "ENSEMBL", "lncRNAWiki"] * 40
+                })
+                st.write("2. Verifying feature scaling & labels...")
+                syn_prep = TranscriptPreprocessor(1.0, -1.0, 0.05)
+                syn_X, syn_y, syn_proc = syn_prep.prepare_features(syn_df, is_train=True)
+                
+                st.write("3. Testing model training & balancing...")
+                syn_trainer = ModelTrainer(random_state=42)
+                sX_tr, sX_te, sy_tr, sy_te = syn_trainer.split_data(syn_X, syn_y, test_size=0.25)
+                syn_comp, syn_res, syn_best, _ = syn_trainer.train_and_evaluate_all(
+                    sX_tr, sX_te, sy_tr, sy_te, class_names=syn_prep.get_class_names()
+                )
+                
+                elapsed = time.time() - t0
+                status.update(label="System Health-Check PASSED! ✅", state="complete", expanded=False)
+                st.sidebar.success(f"All components operational (took {elapsed:.2f}s). Best model: {syn_best}")
+            except Exception as ex:
+                status.update(label="Health-Check FAILED! ❌", state="error")
+                st.sidebar.error(f"Health-Check Failure: {ex}")
+
     # ------------------ FAST BIOLOGICAL PREPROCESSING (<10ms) ------------------
     df_proc = compute_biological_labels(filtered_df, logfc_up, logfc_down, adjp_val)
 

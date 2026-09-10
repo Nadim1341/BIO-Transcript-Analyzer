@@ -151,6 +151,17 @@ class ModelTrainer:
         X_test = X_test_raw.iloc[shuffle_te].reset_index(drop=True)
         y_test = y_test_raw.iloc[shuffle_te].reset_index(drop=True)
 
+        # Sanity checks: feature-target separation and matching row counts
+        leakage_cols = {"target_class", "target_label"}
+        detected_leakage = leakage_cols.intersection(set(X.columns))
+        if detected_leakage:
+            raise ValueError(f"Target leakage detected in features: {detected_leakage}")
+
+        if len(X_train) != len(y_train):
+            raise ValueError(f"X_train length ({len(X_train)}) does not match y_train length ({len(y_train)}).")
+        if len(X_test) != len(y_test):
+            raise ValueError(f"X_test length ({len(X_test)}) does not match y_test length ({len(y_test)}).")
+
         return X_train, X_test, y_train, y_test
 
     def evaluate_model(
@@ -251,31 +262,37 @@ class ModelTrainer:
 
         for name, clf in classifiers.items():
             logger.info(f"Training {name} classifier...")
-            if name in ("MLP", "XGBoost"):
-                clf.fit(X_train, y_train, sample_weight=sample_weights)
-            else:
-                clf.fit(X_train, y_train)
-            self.models[name] = clf
+            try:
+                if name in ("MLP", "XGBoost"):
+                    clf.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    clf.fit(X_train, y_train)
+                self.models[name] = clf
 
-            eval_res = self.evaluate_model(clf, X_test, y_test, num_classes)
-            self.results[name] = eval_res
+                eval_res = self.evaluate_model(clf, X_test, y_test, num_classes)
+                self.results[name] = eval_res
 
-            comparison_rows.append({
-                "Model": name,
-                "Accuracy": eval_res["Accuracy"],
-                "Balanced Accuracy": eval_res["Balanced Accuracy"],
-                "Precision": eval_res["Precision"],
-                "Recall": eval_res["Recall"],
-                "F1-Score": eval_res["F1-Score"],
-                "ROC-AUC": eval_res["ROC-AUC"]
-            })
+                comparison_rows.append({
+                    "Model": name,
+                    "Accuracy": eval_res["Accuracy"],
+                    "Balanced Accuracy": eval_res["Balanced Accuracy"],
+                    "Precision": eval_res["Precision"],
+                    "Recall": eval_res["Recall"],
+                    "F1-Score": eval_res["F1-Score"],
+                    "ROC-AUC": eval_res["ROC-AUC"]
+                })
 
-            # Selection criterion: Combined Macro F1-Score and Balanced Accuracy
-            combined_score = eval_res["F1-Score"] * 0.6 + eval_res["Balanced Accuracy"] * 0.4
-            if combined_score > best_score:
-                best_score = combined_score
-                self.best_model_name = name
-                self.best_model = clf
+                # Selection criterion: Combined Macro F1-Score and Balanced Accuracy
+                combined_score = eval_res["F1-Score"] * 0.6 + eval_res["Balanced Accuracy"] * 0.4
+                if combined_score > best_score:
+                    best_score = combined_score
+                    self.best_model_name = name
+                    self.best_model = clf
+            except Exception as e:
+                logger.error(f"Error training {name}: {e}", exc_info=True)
+
+        if not comparison_rows:
+            raise RuntimeError("All models failed to train.")
 
         comparison_df = pd.DataFrame(comparison_rows).sort_values("Balanced Accuracy", ascending=False).reset_index(drop=True)
         logger.info(f"Best model determined: {self.best_model_name} with score {best_score:.4f}")

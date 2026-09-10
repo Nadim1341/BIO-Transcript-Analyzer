@@ -34,7 +34,8 @@ class Visualizer:
         logfc_down: float = -1.0,
         adjp_thresh: float = 0.05,
         y_axis_col: str = "neg_log10_pvalue",
-        title: str = "Differential Expression Volcano Plot"
+        title: str = "Differential Expression Volcano Plot",
+        max_neutral_display: int = 1500
     ) -> go.Figure:
         """
         Interactive Volcano Plot.
@@ -42,6 +43,7 @@ class Visualizer:
         Y-axis: -log10(P.Value) or -log10(adj.P.Val)
         Color-coded: Red=Up, Blue=Down, Grey=Neutral
         """
+        import warnings
         plot_df = df
         if "neg_log10_pvalue" not in plot_df.columns or "neg_log10_adjpval" not in plot_df.columns:
             plot_df = plot_df.copy()
@@ -61,8 +63,6 @@ class Visualizer:
             ("Up-Regulated", COLOR_UP, 7, 0.9),
         ]
 
-        # For large datasets, cap neutral background cloud at 1,500 points
-        max_neutral_display = 1500
         labels_arr = plot_df["target_label"].values
 
         for cat_name, color, size, opacity in categories:
@@ -74,6 +74,7 @@ class Visualizer:
             # Keep 100% of Up and Down regulated genes; sample neutral background cloud
             if cat_name == "Neutral":
                 if total_cat_count > max_neutral_display:
+                    warnings.warn(f"Volcano plot neutral cloud downsampled from {total_cat_count} to {max_neutral_display} for lag-free rendering.")
                     step = max(1, total_cat_count // max_neutral_display)
                     sampled_indices = match_indices[::step][:max_neutral_display]
                     subset = plot_df.iloc[sampled_indices]
