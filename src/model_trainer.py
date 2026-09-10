@@ -97,44 +97,51 @@ class ModelTrainer:
         X: pd.DataFrame,
         y: pd.Series,
         test_size: float = 0.2,
-        max_train_samples: int = 4000,
-        max_test_samples: int = 1500
+        max_majority_train: int = 3000,
+        max_majority_test: int = 1000
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
         """
-        Split dataset into 80% Training and 20% Testing sets with stratification.
-        Automatically sub-samples massive datasets to keep benchmark training fast and responsive.
+        Stratified biological split preserving 100% of all rare biomarker classes (Up and Down).
+        Only downsamples the overwhelming majority class (Neutral) to ensure representative,
+        sub-second training and proper multi-class evaluation.
         """
-        # Fall back to unstratified split if any class has fewer than 2 instances
         class_counts = y.value_counts()
-        stratify_param = y if (class_counts.min() >= 2) else None
+        majority_class = class_counts.idxmax()
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            random_state=self.random_state,
-            stratify=stratify_param
-        )
+        is_maj = (y == majority_class)
+        X_min, y_min = X[~is_maj], y[~is_maj]
+        X_maj, y_maj = X[is_maj], y[is_maj]
 
-        # Scale down training set if dataset is massive to maintain sub-second responsiveness
-        if len(X_train) > max_train_samples:
-            logger.info(f"Dataset is large ({len(X_train)} train rows). Subsampling to {max_train_samples} for responsive training.")
-            strat_train = y_train if (y_train.value_counts().min() >= 2) else None
-            X_train, _, y_train, _ = train_test_split(
-                X_train, y_train,
-                train_size=max_train_samples,
-                random_state=self.random_state,
-                stratify=strat_train
+        # 1. Split minority classes preserving 100% of them
+        if len(y_min) >= 2:
+            strat_min = y_min if (y_min.value_counts().min() >= 2) else None
+            X_min_tr, X_min_te, y_min_tr, y_min_te = train_test_split(
+                X_min, y_min, test_size=test_size, random_state=self.random_state, stratify=strat_min
+            )
+        else:
+            X_min_tr, X_min_te, y_min_tr, y_min_te = X_min, X_min.iloc[0:0], y_min, y_min.iloc[0:0]
+
+        # 2. Split majority class (downsample if massive to keep training sub-second)
+        total_maj_cap = max_majority_train + max_majority_test
+        if len(X_maj) > total_maj_cap:
+            logger.info(f"Subsampling majority neutral class from {len(X_maj):,} to {total_maj_cap:,} while keeping 100% of rare regulated transcripts.")
+            sampled_maj = X_maj.sample(n=total_maj_cap, random_state=self.random_state)
+            test_ratio = max_majority_test / total_maj_cap
+            X_maj_tr, X_maj_te = train_test_split(
+                sampled_maj, test_size=test_ratio, random_state=self.random_state
+            )
+            y_maj_tr = y.loc[X_maj_tr.index]
+            y_maj_te = y.loc[X_maj_te.index]
+        else:
+            X_maj_tr, X_maj_te, y_maj_tr, y_maj_te = train_test_split(
+                X_maj, y_maj, test_size=test_size, random_state=self.random_state
             )
 
-        if len(X_test) > max_test_samples:
-            strat_test = y_test if (y_test.value_counts().min() >= 2) else None
-            X_test, _, y_test, _ = train_test_split(
-                X_test, y_test,
-                train_size=max_test_samples,
-                random_state=self.random_state,
-                stratify=strat_test
-            )
+        # 3. Combine preserving all classes in both train and test sets
+        X_train = pd.concat([X_min_tr, X_maj_tr]).sample(frac=1.0, random_state=self.random_state)
+        y_train = y.loc[X_train.index]
+        X_test = pd.concat([X_min_te, X_maj_te]).sample(frac=1.0, random_state=self.random_state)
+        y_test = y.loc[X_test.index]
 
         return X_train, X_test, y_train, y_test
 
@@ -146,8 +153,10 @@ class ModelTrainer:
         num_classes: int
     ) -> Dict[str, Any]:
         """
-        Evaluate trained classifier across Accuracy, Precision, Recall, F1, and ROC-AUC.
+        Evaluate trained classifier across Accuracy, Balanced Accuracy, Macro/Weighted F1, Precision, Recall, and ROC-AUC.
         """
+        from sklearn.metrics import balanced_accuracy_score
+
         y_pred = model.predict(X_test)
 
         # Probabilities for ROC-AUC
@@ -157,24 +166,26 @@ class ModelTrainer:
             y_prob = None
 
         acc = accuracy_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred, average="weighted", zero_division=0)
-        rec = recall_score(y_test, y_pred, average="weighted", zero_division=0)
-        f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
+        bal_acc = balanced_accuracy_score(y_test, y_pred)
+        prec_macro = precision_score(y_test, y_pred, average="macro", zero_division=0)
+        rec_macro = recall_score(y_test, y_pred, average="macro", zero_division=0)
+        f1_macro = f1_score(y_test, y_pred, average="macro", zero_division=0)
+        prec_weighted = precision_score(y_test, y_pred, average="weighted", zero_division=0)
+        rec_weighted = recall_score(y_test, y_pred, average="weighted", zero_division=0)
+        f1_weighted = f1_score(y_test, y_pred, average="weighted", zero_division=0)
 
-        # Multiclass ROC-AUC (One-vs-Rest)
+        # Multiclass ROC-AUC (One-vs-Rest, macro average)
         roc_auc = 0.0
         roc_curves_data: Dict[int, Dict[str, Any]] = {}
 
         if y_prob is not None and num_classes > 1:
             try:
-                # If only a subset of classes is present in y_test, handle carefully
                 present_classes = np.unique(y_test)
                 if len(present_classes) == y_prob.shape[1]:
-                    roc_auc = roc_auc_score(y_test, y_prob, multi_class="ovr", average="weighted")
+                    roc_auc = roc_auc_score(y_test, y_prob, multi_class="ovr", average="macro")
                 else:
                     roc_auc = 0.5
 
-                # Compute ROC curves for individual classes
                 for c_idx in range(y_prob.shape[1]):
                     y_binary = (y_test == c_idx).astype(int)
                     if len(np.unique(y_binary)) > 1:
@@ -193,9 +204,13 @@ class ModelTrainer:
 
         return {
             "Accuracy": float(acc),
-            "Precision": float(prec),
-            "Recall": float(rec),
-            "F1-Score": float(f1),
+            "Balanced Accuracy": float(bal_acc),
+            "Precision": float(prec_macro),
+            "Recall": float(rec_macro),
+            "F1-Score": float(f1_macro),
+            "Weighted F1": float(f1_weighted),
+            "Weighted Precision": float(prec_weighted),
+            "Weighted Recall": float(rec_weighted),
             "ROC-AUC": float(roc_auc),
             "confusion_matrix": cm,
             "roc_curves": roc_curves_data,
@@ -212,7 +227,7 @@ class ModelTrainer:
         class_names: Optional[List[str]] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]], str, Any]:
         """
-        Train all 4 classifiers, compute metrics, and select best model based on F1-Score.
+        Train all 4 classifiers, compute metrics, and select best model based on Balanced Accuracy and Macro F1.
         """
         self.class_names = class_names or ["Down-Regulated", "Neutral", "Up-Regulated"]
         num_classes = len(self.class_names)
@@ -235,20 +250,21 @@ class ModelTrainer:
             comparison_rows.append({
                 "Model": name,
                 "Accuracy": eval_res["Accuracy"],
+                "Balanced Accuracy": eval_res["Balanced Accuracy"],
                 "Precision": eval_res["Precision"],
                 "Recall": eval_res["Recall"],
                 "F1-Score": eval_res["F1-Score"],
                 "ROC-AUC": eval_res["ROC-AUC"]
             })
 
-            # Selection criterion: Combined F1-Score and Accuracy
-            combined_score = eval_res["F1-Score"] * 0.7 + eval_res["Accuracy"] * 0.3
+            # Selection criterion: Combined Macro F1-Score and Balanced Accuracy
+            combined_score = eval_res["F1-Score"] * 0.6 + eval_res["Balanced Accuracy"] * 0.4
             if combined_score > best_score:
                 best_score = combined_score
                 self.best_model_name = name
                 self.best_model = clf
 
-        comparison_df = pd.DataFrame(comparison_rows).sort_values("F1-Score", ascending=False).reset_index(drop=True)
+        comparison_df = pd.DataFrame(comparison_rows).sort_values("Balanced Accuracy", ascending=False).reset_index(drop=True)
         logger.info(f"Best model determined: {self.best_model_name} with score {best_score:.4f}")
 
         return comparison_df, self.results, self.best_model_name, self.best_model

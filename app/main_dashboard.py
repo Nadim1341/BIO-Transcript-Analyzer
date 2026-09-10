@@ -470,9 +470,19 @@ def main():
             class_names = ml_out["class_names"]
 
             # Benchmark Comparison Table
+            with st.expander("ℹ️ Why are benchmark scores so high (~1.000)?", expanded=False):
+                st.markdown(r"""
+                **Scientific Context of Model Scores**:
+                - **Deterministic Boundary**: The ground-truth biological classes (*Up-Regulated*, *Down-Regulated*, *Neutral*) are created by exact mathematical criteria ($\text{logFC} \ge 1.0 \land \text{adj.P.Val} < 0.05$).
+                - **Feature Alignment**: Because classifiers receive the statistical metrics ($\text{logFC}, t\text{-statistic}, -\log_{10}(\text{P.Value})$), all 4 models (RF, XGBoost, SVM, MLP) readily learn this decision boundary with near-perfect separation.
+                - **Class-Preserving Stratification**: The pipeline preserves 100% of the rare biomarker instances in the holdout test set while downsampling the neutral background.
+                - **Balanced Accuracy & Macro F1**: Shows the unweighted average performance across all 3 biological classes equally.
+                """)
+
             formatted_comp = comp_df.copy()
-            for col in ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]:
-                formatted_comp[col] = formatted_comp[col].apply(lambda x: f"{x:.4f}")
+            for col in ["Balanced Accuracy", "Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]:
+                if col in formatted_comp.columns:
+                    formatted_comp[col] = formatted_comp[col].apply(lambda x: f"{x:.4f}")
 
             st.dataframe(formatted_comp, use_container_width=True)
 

@@ -270,7 +270,7 @@ class Visualizer:
         """
         Grouped bar chart for benchmark comparison across the 4 ML classifiers.
         """
-        metrics = ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]
+        metrics = ["Balanced Accuracy", "Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]
         melted_df = comparison_df.melt(
             id_vars=["Model"],
             value_vars=[m for m in metrics if m in comparison_df.columns],

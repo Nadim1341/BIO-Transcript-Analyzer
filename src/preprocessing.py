@@ -157,8 +157,8 @@ class TranscriptPreprocessor:
         # Step 3: One-hot encode databases
         df_proc = self.encode_database_sources(df_proc)
 
-        # Define feature groups
-        self.numerical_cols = ["logFC", "t", "neg_log10_pvalue", "neg_log10_adjpval", "abs_logFC"]
+        # Define feature groups (exclude neg_log10_adjpval to avoid direct target label leakage)
+        self.numerical_cols = ["logFC", "t", "neg_log10_pvalue", "abs_logFC"]
         self.db_cols = [f"db_{db.replace(' ', '_')}" for db in CANONICAL_DATABASES] + ["db_Other"]
         self.feature_names = self.numerical_cols + self.db_cols
 
