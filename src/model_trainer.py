@@ -22,6 +22,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -82,12 +83,12 @@ class ModelTrainer:
                 random_state=self.random_state
             ),
             "MLP": MLPClassifier(
-                hidden_layer_sizes=(64, 32),
+                hidden_layer_sizes=(32, 16),
                 activation="relu",
                 alpha=0.001,
-                max_iter=200,
-                early_stopping=True,
-                n_iter_no_change=6,
+                learning_rate_init=0.01,
+                max_iter=120,
+                early_stopping=False,
                 random_state=self.random_state
             )
         }
@@ -137,11 +138,18 @@ class ModelTrainer:
                 X_maj, y_maj, test_size=test_size, random_state=self.random_state
             )
 
-        # 3. Combine preserving all classes in both train and test sets
-        X_train = pd.concat([X_min_tr, X_maj_tr]).sample(frac=1.0, random_state=self.random_state)
-        y_train = y.loc[X_train.index]
-        X_test = pd.concat([X_min_te, X_maj_te]).sample(frac=1.0, random_state=self.random_state)
-        y_test = y.loc[X_test.index]
+        # 3. Combine synchronously to guarantee identical row counts and clean reset indices
+        X_train_raw = pd.concat([X_min_tr, X_maj_tr], axis=0)
+        y_train_raw = pd.concat([y_min_tr, y_maj_tr], axis=0)
+        shuffle_tr = np.random.RandomState(self.random_state).permutation(len(X_train_raw))
+        X_train = X_train_raw.iloc[shuffle_tr].reset_index(drop=True)
+        y_train = y_train_raw.iloc[shuffle_tr].reset_index(drop=True)
+
+        X_test_raw = pd.concat([X_min_te, X_maj_te], axis=0)
+        y_test_raw = pd.concat([y_min_te, y_maj_te], axis=0)
+        shuffle_te = np.random.RandomState(self.random_state).permutation(len(X_test_raw))
+        X_test = X_test_raw.iloc[shuffle_te].reset_index(drop=True)
+        y_test = y_test_raw.iloc[shuffle_te].reset_index(drop=True)
 
         return X_train, X_test, y_train, y_test
 
@@ -237,11 +245,16 @@ class ModelTrainer:
         self.results = {}
         comparison_rows = []
 
+        # Compute balanced class sample weights to counteract severe class imbalance
+        sample_weights = compute_sample_weight("balanced", y_train)
         best_score = -1.0
 
         for name, clf in classifiers.items():
             logger.info(f"Training {name} classifier...")
-            clf.fit(X_train, y_train)
+            if name in ("MLP", "XGBoost"):
+                clf.fit(X_train, y_train, sample_weight=sample_weights)
+            else:
+                clf.fit(X_train, y_train)
             self.models[name] = clf
 
             eval_res = self.evaluate_model(clf, X_test, y_test, num_classes)
